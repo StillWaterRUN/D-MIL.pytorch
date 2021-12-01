@@ -1,4 +1,4 @@
-_BASE_: "Base-RCNN-DilatedC5.yaml"
+_BASE_: "Base-RCNN-DilatedC5_VOC0712.yaml"
 MODEL:
   WEIGHTS: "models/DRN-WSOD/resnet50_ws_model_120_d2.pkl"
   PIXEL_MEAN: [102.9801, 115.9465, 122.7717]
