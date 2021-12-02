@@ -7,6 +7,7 @@ import torch
 from fvcore.transforms import HFlipTransform, NoOpTransform
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
+from xml.etree import ElementTree as ET
 
 from detectron2.data.detection_utils import read_image
 from detectron2.data.transforms import (
@@ -20,8 +21,101 @@ from detectron2.structures import Boxes, Instances
 
 from .meta_arch import GeneralizedRCNNWSL
 from .postprocessing import detector_postprocess
+from xml.dom import minidom
 
+import pdb
+import os 
 __all__ = ["DatasetMapperTTAAVG", "GeneralizedRCNNWithTTAAVG"]
+
+
+CLASS_NAMES = (
+    "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat",
+    "chair", "cow", "diningtable", "dog", "horse", "motorbike", "person",
+    "pottedplant", "sheep", "sofa", "train", "tvmonitor"
+)
+
+def get_image_category(image_path, class_name=CLASS_NAMES):
+    dataset_name = image_path.split('/')[1]
+    image_name = image_path.split('/')[-1].split('.')[-2]
+    filename = os.path.join('datasets', dataset_name, 'Annotations', f'{image_name}.xml')
+    with open(filename) as f:
+        tree = ET.parse(f)
+    classes = []
+    for obj in tree.findall("object"):
+        cls = obj.find("name").text
+        classes.append(CLASS_NAMES.index(cls))
+    return torch.tensor(classes)
+
+def parse_xml_12(xml_file, re_xml_file, gt_truth, image_name):
+    tree = ET.parse(xml_file)
+    root = ET.Element('annotation')
+    ET.SubElement(root, 'folder').text = tree.find('folder').text
+    ET.SubElement(root, 'filename').text = tree.find('filename').text
+    
+    source = ET.SubElement(root, 'source')
+    ET.SubElement(source, 'database').text = tree.find('source').find('database').text
+    ET.SubElement(source, 'annotation').text = tree.find('source').find('annotation').text
+    ET.SubElement(source, 'image').text = tree.find('source').find('image').text
+    
+    size = ET.SubElement(root, 'size')
+    ET.SubElement(size, 'width').text = tree.find('size').find('width').text
+    ET.SubElement(size, 'height').text = tree.find('size').find('height').text
+    ET.SubElement(size, 'depth').text = tree.find('size').find('depth').text
+    
+    ET.SubElement(root, 'segmented').text = tree.find('segmented').text
+    
+    for obj in gt_truth:
+        obj_struct = ET.SubElement(root, 'object')
+        ET.SubElement(obj_struct, 'name').text = obj[0]
+        bndbox = ET.SubElement(obj_struct, 'bndbox')
+        ET.SubElement(bndbox, 'xmin').text = str(obj[1])
+        ET.SubElement(bndbox, 'ymin').text = str(obj[2])
+        ET.SubElement(bndbox, 'xmax').text = str(obj[3])
+        ET.SubElement(bndbox, 'ymax').text = str(obj[4])
+    xmltsr = minidom.parseString(ET.tostring(root)).toprettyxml(indent=6*' ')
+    
+    open(re_xml_file, 'w').close()
+    
+    with open(re_xml_file, 'w') as f:
+        f.write(xmltsr)
+
+def parse_xml_07(xml_file, re_xml_file, gt_truth, image_name):
+    tree = ET.parse(xml_file)
+    root = ET.Element('annotation')
+    ET.SubElement(root, 'folder').text = tree.find('folder').text
+    ET.SubElement(root, 'filename').text = tree.find('filename').text
+    
+    source = ET.SubElement(root, 'source')
+    ET.SubElement(source, 'database').text = tree.find('source').find('database').text
+    ET.SubElement(source, 'annotation').text = tree.find('source').find('annotation').text
+    ET.SubElement(source, 'image').text = tree.find('source').find('image').text
+    ET.SubElement(source, 'flickrid').text = tree.find('source').find('flickrid').text
+    
+    owner = ET.SubElement(root, 'owner')
+    ET.SubElement(owner, 'flickrid').text = tree.find('owner').find('flickrid').text
+    ET.SubElement(owner, 'name').text = tree.find('owner').find('name').text
+    
+    size = ET.SubElement(root, 'size')
+    ET.SubElement(size, 'width').text = tree.find('size').find('width').text
+    ET.SubElement(size, 'height').text = tree.find('size').find('height').text
+    ET.SubElement(size, 'depth').text = tree.find('size').find('depth').text
+    
+    ET.SubElement(root, 'segmented').text = tree.find('segmented').text
+    
+    for obj in gt_truth:
+        obj_struct = ET.SubElement(root, 'object')
+        ET.SubElement(obj_struct, 'name').text = obj[0]
+        bndbox = ET.SubElement(obj_struct, 'bndbox')
+        ET.SubElement(bndbox, 'xmin').text = str(obj[1])
+        ET.SubElement(bndbox, 'ymin').text = str(obj[2])
+        ET.SubElement(bndbox, 'xmax').text = str(obj[3])
+        ET.SubElement(bndbox, 'ymax').text = str(obj[4])
+    xmltsr = minidom.parseString(ET.tostring(root)).toprettyxml(indent=6*' ')
+    
+    open(re_xml_file, 'w').close()
+    
+    with open(re_xml_file, 'w') as f:
+        f.write(xmltsr)
 
 
 def transform_proposals(dataset_dict, image_shape, transforms, *, proposal_topk, min_box_size=0):
@@ -232,14 +326,17 @@ class GeneralizedRCNNWithTTAAVG(nn.Module):
         def _maybe_read_image(dataset_dict):
             ret = copy.copy(dataset_dict)
             if "image" not in ret:
-                image = read_image(ret.pop("file_name"), self.image_format)
+                image = read_image(ret["file_name"], self.image_format)
                 image = torch.from_numpy(image).permute(2, 0, 1)  # CHW
                 ret["image"] = image
             if "height" not in ret and "width" not in ret:
                 ret["height"] = image.shape[1]
                 ret["width"] = image.shape[2]
+            if "category" not in ret:
+                category = get_image_category(ret["file_name"])
+                ret["category"] = category
             return ret
-
+        
         return [self._inference_one_image(_maybe_read_image(x)) for x in batched_inputs]
 
     def _inference_one_image(self, input):
@@ -256,6 +353,7 @@ class GeneralizedRCNNWithTTAAVG(nn.Module):
         with self._turn_off_roi_heads(["mask_on", "keypoint_on"]):
             # temporarily disable roi heads
             all_boxes, all_scores, all_classes = self._get_augmented_boxes(augmented_inputs, tfms)
+        generated_gt = self.save_det_result(all_boxes, all_scores, input)
         # merge all detected boxes to obtain final predictions for boxes
         merged_instances = self._merge_detections(all_boxes, all_scores, all_classes, orig_shape)
 
@@ -308,7 +406,7 @@ class GeneralizedRCNNWithTTAAVG(nn.Module):
 
     def _merge_detections(self, all_boxes, all_scores, all_classes, shape_hw):
         all_scores_2d = all_scores
-
+        all_scores_2d = all_scores
         merged_instances, _ = fast_rcnn_inference_single_image(
             all_boxes,
             all_scores_2d,
@@ -319,6 +417,35 @@ class GeneralizedRCNNWithTTAAVG(nn.Module):
         )
 
         return merged_instances
+
+    def save_det_result(self, boxes, scores, input):
+        image_id = input["image_id"]
+        classes = input['category']
+        image_shape = (input["height"], input["width"])
+        valid_mask = torch.isfinite(boxes).all(dim=1) & torch.isfinite(scores).all(dim=1)
+        if not valid_mask.all():
+            boxes = boxes[valid_mask]
+            scores = scores[valid_mask]
+
+        scores = scores[:, :-1]
+        num_bbox_reg_classes = boxes.shape[1] // 4
+        # Convert to Boxes to use the `clip` function ...
+        boxes = Boxes(boxes.reshape(-1, 4))
+        boxes.clip(image_shape)
+        boxes = boxes.tensor.view(-1, num_bbox_reg_classes, 4)  # R x C x 4
+        xml_file = os.path.join(os.path.dirname(os.path.dirname(input['file_name'])), 'Annotations', f'{input["image_id"]}.xml')
+        re_ann_file = os.path.join(os.path.dirname(os.path.dirname(input['file_name'])), 're_annotations', f'{input["image_id"]}.xml')
+        ground_truth =  []
+        parse_func = parse_xml_12 if '_' in image_id else parse_xml_07
+
+        for cls in classes.unique():
+            max_idx = torch.argmax(scores[:,cls])
+            gt_box = boxes[max_idx, cls, :].cpu().numpy()
+            ground_truth.append([CLASS_NAMES[cls], gt_box[0], gt_box[1], gt_box[2], gt_box[3], scores[max_idx, cls]])
+        os.makedirs(os.path.dirname(re_ann_file), exist_ok=True)
+        parse_func(xml_file=xml_file, re_xml_file=re_ann_file, gt_truth=ground_truth, image_name=image_id)
+
+        return ground_truth
 
     def _rescale_detected_boxes(self, augmented_inputs, merged_instances, tfms):
         augmented_instances = []
